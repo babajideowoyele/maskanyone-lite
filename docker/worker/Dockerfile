@@ -8,7 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
-    mediapipe==0.10.14 opencv-python-headless requests numpy==1.26.4
+    mediapipe==0.10.14 opencv-python-headless requests numpy==1.26.4 \
+    fastapi "uvicorn[standard]" pydantic
 
 RUN mkdir /worker_models \
     && wget -q https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task \

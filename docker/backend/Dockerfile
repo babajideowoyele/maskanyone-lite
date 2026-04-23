@@ -9,6 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir \
     fastapi "uvicorn[standard]" psycopg2 requests python-jose[cryptography] \
-    opencv-python-headless numpy==1.26.4 psutil pandas
+    opencv-python-headless numpy==1.26.4 psutil pandas python-multipart
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
