@@ -1,6 +1,6 @@
 # MaskAnyone-Lite: CPU-Friendly De-Identification Toolbox
 
-**Purpose of this document:** briefing for a fresh Claude Code session to bootstrap a new repository derived from MaskAnyone, targeting researchers and practitioners who need robust video de-identification **without a consumer GPU**.
+**Purpose of this document:** briefing to bootstrap a new repository derived from MaskAnyone, targeting researchers and practitioners who need robust video de-identification **without a consumer GPU**.
 
 ---
 
@@ -231,9 +231,9 @@ Before starting, the implementer should confirm:
 | CPU peak memory exceeds laptop RAM on long videos | Medium | Implement upstream's chunk-based streaming for MobileSAM video mode (adapt `_mask_streaming` from `sam2_pose_masker.py`). |
 | AGPL creeping in via transitive dep | Low–Medium | `scripts/license_audit.sh` in CI catches this. |
 
-## 13. Handoff Notes to the Next Agent
+## 13. Handoff Notes
 
-When you (Claude) pick this up in a fresh session:
+When picking this up in a fresh session:
 
 1. **Read this document fully before touching code.** Every decision above is already made.
 2. **Start with Phase 1.** Don't skip ahead. The goal is to have a working CPU-only upstream-derived stack before introducing new segmenters.
