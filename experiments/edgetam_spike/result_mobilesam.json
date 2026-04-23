@@ -1,0 +1,21 @@
+{
+  "segmenter": "MobileSAM",
+  "checkpoint": "mobile_sam.pt",
+  "backbone": "vit_t",
+  "mode": "per-frame (no tracking)",
+  "torch_version": "2.4.1+cpu",
+  "dtype": "float32",
+  "num_threads": 15,
+  "video": "ted_kid.mp4",
+  "video_size": "1920x1080",
+  "num_frames": 30,
+  "load_s": 0.14,
+  "first_frame_ms": 347.7,
+  "mean_ms_excl_first": 318.8,
+  "median_ms_excl_first": 313.2,
+  "p95_ms_excl_first": 343.4,
+  "total_wall_s": 11.43,
+  "start_rss_mb": 538.0,
+  "peak_rss_mb": 874.0,
+  "rss_growth_mb": 336.0
+}

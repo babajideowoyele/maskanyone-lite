@@ -1,0 +1,21 @@
+{
+  "segmenter": "EdgeTAM-image",
+  "model_id": "yonigozlan/EdgeTAM-hf",
+  "mode": "per-frame (no tracking)",
+  "transformers_version": "4.57.6",
+  "torch_version": "2.4.1+cpu",
+  "dtype": "float32",
+  "num_threads": 15,
+  "video": "ted_kid.mp4",
+  "video_size": "1920x1080",
+  "num_frames": 30,
+  "load_s": 1.78,
+  "first_frame_ms": 298.9,
+  "mean_ms_excl_first": 247.7,
+  "median_ms_excl_first": 246.3,
+  "p95_ms_excl_first": 278.0,
+  "total_wall_s": 9.87,
+  "start_rss_mb": 492.0,
+  "peak_rss_mb": 1090.0,
+  "rss_growth_mb": 598.0
+}
