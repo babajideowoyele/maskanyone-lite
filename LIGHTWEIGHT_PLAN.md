@@ -43,7 +43,8 @@ For most academic users, a GPU is not available. A de-identification tool that r
 
 | Decision | Chosen | Reason |
 |---|---|---|
-| Primary segmenter | **MobileSAM** (Apache 2.0) | SAM-compatible prompt API, ~200 ms/image on CPU, Apache licensed |
+| Primary segmenter | **EdgeTAM-image** (`yonigozlan/EdgeTAM-hf`, Apache 2.0) | Per-frame inference ~22% faster than MobileSAM on the same CPU (248 vs 319 ms at 1080p, float32). MobileSAM kept as fallback. Evidence: [docs/segmenter_spike.md](docs/segmenter_spike.md). Future spike: adapt [facebookresearch/EdgeTAM](https://github.com/facebookresearch/EdgeTAM) to CPU to unlock built-in video tracking. |
+| Secondary segmenter (fallback) | **MobileSAM** (Apache 2.0) | Smaller RAM footprint (874 vs 1090 MB peak), 18× faster cold start; useful for low-RAM targets or if EdgeTAM-hf becomes unavailable |
 | Zero-prompt fallback | **MediaPipe Selfie Segmentation** (Apache 2.0) | Already in upstream's worker image; ~20 ms/frame on CPU |
 | Pose estimation | **MediaPipe** pose/face/hand landmarkers | Already CPU-native in upstream |
 | Object detection (replacing YOLO) | **MediaPipe Object Detector** or **RTMDet-nano** | Both Apache 2.0; avoids AGPL from ultralytics |
@@ -169,7 +170,7 @@ This is a **new repository**, not a fork of the `samhack` branch. Reasons:
 
 ## 7. Open Decisions (for the implementer to make)
 
-1. **MobileSAM video tracking strategy.** Frame-by-frame with re-prompt every N frames? IoU-based mask propagation? Lightweight tracker library (ByteTrack)? Pick one based on prototyping on 2–3 real clips. If this turns into its own research problem, punt it: do frame-by-frame and document the flicker as a known limitation.
+1. **Video tracking strategy for EdgeTAM-image / MobileSAM.** Both primary and fallback segmenters are image-only in the current configuration — they need cross-frame tracking glue. Options: frame-by-frame with re-prompt every N frames, IoU-based mask propagation, lightweight tracker (ByteTrack). Start with IoU propagation; document flicker as a known limitation. A separate spike to adapt [facebookresearch/EdgeTAM](https://github.com/facebookresearch/EdgeTAM) to CPU would unlock EdgeTAM's built-in memory-attention tracking and obsolete this decision — but it's not Phase 1 scope.
 
 2. **Whether to keep pgadmin.** Upstream ships it. For a lightweight release, dropping it saves ~200 MB image and a port. Recommend: drop by default, add back behind a compose profile if needed.
 
