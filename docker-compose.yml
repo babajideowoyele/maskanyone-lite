@@ -1,0 +1,87 @@
+services:
+  nginx:
+    build: ./docker/nginx
+    ports:
+      - "443:443"
+    restart: "on-failure"
+    depends_on:
+      python:
+        condition: service_healthy
+      yarn:
+        condition: service_started
+
+  python:
+    build:
+      context: ./docker/backend
+    command: "uvicorn main:app --reload --proxy-headers --host 0.0.0.0 --root-path /api/"
+    environment:
+      - TIMEOUT=600
+    env_file:
+      - ./app.env
+    volumes:
+      - ./backend:/app
+      - ./data/backend:/var/lib/maskanyone/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=2", "http://localhost:8000/platform/mode"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  postgres:
+    build:
+      context: ./docker/postgres
+    env_file:
+      - ./app.env
+    volumes:
+      - ./docker/postgres/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev -d prototype"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  pgadmin:
+    build:
+      context: ./docker/pgadmin
+    ports:
+      - "5433:443"
+    environment:
+      PGADMIN_ENABLE_TLS: "True"
+      PGADMIN_DEFAULT_EMAIL: "dev@dev.dev"
+      PGADMIN_DEFAULT_PASSWORD: "dev"
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  yarn:
+    build:
+      context: ./docker/yarn
+    command: "yarn start"
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./frontend:/app
+
+  worker:
+    build:
+      context: ./docker/worker
+    command: "python worker.py"
+    env_file:
+      - ./app.env
+    environment:
+      - MALLOC_ARENA_MAX=2
+    volumes:
+      - ./worker:/app
+    depends_on:
+      python:
+        condition: service_healthy
+    restart: on-failure
