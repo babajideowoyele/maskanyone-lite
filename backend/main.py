@@ -43,7 +43,7 @@ async def mask(
     prompt_y: int | None = Form(None),
     downsample: float = Form(1.0),
 ) -> dict:
-    if strategy not in {"blur", "solid", "pixelate"}:
+    if strategy not in {"blur", "solid", "pixelate", "skeleton"}:
         raise HTTPException(status_code=400, detail=f"unknown strategy: {strategy}")
     if mode not in {"quick", "precision"}:
         raise HTTPException(status_code=400, detail=f"unknown mode: {mode}")

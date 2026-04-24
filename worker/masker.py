@@ -35,6 +35,48 @@ def _mask_quick(frame_bgr: np.ndarray, segmenter) -> np.ndarray:
     return segmenter.process(rgb).segmentation_mask > 0.5
 
 
+def _skeleton_frame(frame_bgr: np.ndarray, holistic_ctx) -> np.ndarray:
+    """Black out the person silhouette and overlay pose/face/hand landmarks.
+
+    Uses MediaPipe Holistic (single pass for segmentation + landmarks). The
+    mask color is solid black; the landmarks are drawn with MediaPipe's
+    default styles on top of the blacked-out region. Background is untouched.
+    """
+    mp_drawing = mp.solutions.drawing_utils
+    mp_styles = mp.solutions.drawing_styles
+    mp_h = mp.solutions.holistic
+
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    res = holistic_ctx.process(rgb)
+    out = frame_bgr.copy()
+
+    if res.segmentation_mask is not None:
+        mask = res.segmentation_mask > 0.5
+        out[mask] = 0
+
+    if res.pose_landmarks:
+        mp_drawing.draw_landmarks(
+            out,
+            res.pose_landmarks,
+            mp_h.POSE_CONNECTIONS,
+            landmark_drawing_spec=mp_styles.get_default_pose_landmarks_style(),
+        )
+    if res.face_landmarks:
+        mp_drawing.draw_landmarks(
+            out,
+            res.face_landmarks,
+            mp_h.FACEMESH_TESSELATION,
+            landmark_drawing_spec=None,
+            connection_drawing_spec=mp_styles.get_default_face_mesh_tesselation_style(),
+        )
+    if res.left_hand_landmarks:
+        mp_drawing.draw_landmarks(out, res.left_hand_landmarks, mp_h.HAND_CONNECTIONS)
+    if res.right_hand_landmarks:
+        mp_drawing.draw_landmarks(out, res.right_hand_landmarks, mp_h.HAND_CONNECTIONS)
+
+    return out
+
+
 # EdgeTAM is loaded lazily (heavy import + model download) and cached.
 _edgetam: Optional[tuple] = None
 
@@ -90,6 +132,42 @@ def mask_video(
     # Segmentation resolution; output stays at native resolution.
     sw, sh = max(1, int(w * downsample)), max(1, int(h * downsample))
     out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+
+    # Skeleton strategy bypasses the mask-then-replace flow: it runs
+    # MediaPipe Holistic (one model for mask + pose + face + hands) per frame
+    # and writes the frame with the silhouette blacked and landmarks drawn.
+    if strategy == "skeleton":
+        holistic = mp.solutions.holistic.Holistic(
+            static_image_mode=False,
+            enable_segmentation=True,
+            refine_face_landmarks=False,
+        )
+        start = time.perf_counter()
+        n = 0
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                out.write(_skeleton_frame(frame, holistic))
+                n += 1
+        finally:
+            cap.release()
+            out.release()
+            holistic.close()
+        _manifest.write(
+            output_path + ".manifest.json",
+            input_path=input_path,
+            output_path=output_path,
+            mode=mode,
+            strategy=strategy,
+            prompt_xy=None,
+            downsample=downsample,
+            frames=n,
+            duration_s=time.perf_counter() - start,
+            original_filename=original_filename,
+        )
+        return n
 
     if mode == "quick":
         segmenter = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)

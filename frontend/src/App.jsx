@@ -15,7 +15,7 @@ import {
   Theme,
 } from '@carbon/react';
 
-const STRATEGIES = ['blur', 'solid', 'pixelate'];
+const STRATEGIES = ['blur', 'solid', 'pixelate', 'skeleton'];
 const MODES = ['quick', 'precision'];
 
 export default function App() {
