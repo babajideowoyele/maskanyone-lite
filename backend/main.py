@@ -100,7 +100,10 @@ def job_result(job_id: str) -> StreamingResponse:
     out_path = job["output_path"]
     manifest_path = out_path + ".manifest.json"
     if not os.path.exists(out_path):
-        raise HTTPException(status_code=500, detail="output missing on disk")
+        # Either never produced (shouldn't happen at status='done'), or
+        # already served once and cleaned up. 410 Gone tells the client
+        # to stop retrying.
+        raise HTTPException(status_code=410, detail="output already served or gone")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
@@ -108,6 +111,14 @@ def job_result(job_id: str) -> StreamingResponse:
         if os.path.exists(manifest_path):
             z.write(manifest_path, arcname="manifest.json")
     buf.seek(0)
+
+    # Clean up the on-disk artifacts now that they're in the response buffer.
+    # DB row stays for audit trail; subsequent GETs return 410.
+    for p in (out_path, manifest_path):
+        try:
+            os.unlink(p)
+        except FileNotFoundError:
+            pass
 
     base = job["original_filename"] or "output"
     fname = f"masked_{job['mode']}_{job['strategy']}_{base}.zip"
