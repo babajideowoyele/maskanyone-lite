@@ -4,7 +4,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libpq-dev ffmpeg wget \
+    libgl1 libpq-dev ffmpeg wget gcc \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # CPU torch + HF Transformers for EdgeTAM-image precision mode.
@@ -12,8 +12,8 @@ RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu \
     torch==2.4.1 torchvision==0.19.1 \
   && pip install --no-cache-dir \
-    mediapipe==0.10.14 opencv-python-headless requests numpy==1.26.4 \
-    fastapi "uvicorn[standard]" pydantic \
+    mediapipe==0.10.14 opencv-python-headless numpy==1.26.4 \
+    psycopg2-binary \
     transformers==4.57.6 timm==1.0.26 pillow
 
 RUN mkdir /worker_models \

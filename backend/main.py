@@ -1,9 +1,8 @@
 """maskanyone-lite backend.
 
-Synchronous upload-and-mask endpoint. Accepts a video, writes it to a shared
-volume, asks the worker to mask it, streams the result back.
-
-A proper job queue will replace this — same /mask contract, different internals.
+Async-ish job queue: POST /mask enqueues and returns immediately with
+{job_id}. GET /mask/{id} returns status JSON. GET /mask/{id}/result
+returns the zip (404 until done).
 """
 from __future__ import annotations
 
@@ -12,17 +11,22 @@ import os
 import uuid
 import zipfile
 
-import requests
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+
+import db
 
 app = FastAPI()
 
 SHARED_DIR = "/var/lib/maskanyone/shared"
-WORKER_URL = os.environ.get("WORKER_URL", "http://worker:8000")
 
 os.makedirs(os.path.join(SHARED_DIR, "in"), exist_ok=True)
 os.makedirs(os.path.join(SHARED_DIR, "out"), exist_ok=True)
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    db.init_schema()
 
 
 @app.get("/platform/mode")
@@ -30,7 +34,7 @@ def platform_mode() -> dict:
     return {"mode": "local"}
 
 
-@app.post("/mask")
+@app.post("/mask", status_code=202)
 async def mask(
     video: UploadFile = File(...),
     strategy: str = Form("blur"),
@@ -38,63 +42,77 @@ async def mask(
     prompt_x: int | None = Form(None),
     prompt_y: int | None = Form(None),
     downsample: float = Form(1.0),
-) -> StreamingResponse:
+) -> dict:
     if strategy not in {"blur", "solid", "pixelate"}:
         raise HTTPException(status_code=400, detail=f"unknown strategy: {strategy}")
     if mode not in {"quick", "precision"}:
         raise HTTPException(status_code=400, detail=f"unknown mode: {mode}")
     if not 0.1 <= downsample <= 1.0:
-        raise HTTPException(status_code=400, detail=f"downsample must be in [0.1, 1.0]")
+        raise HTTPException(status_code=400, detail="downsample must be in [0.1, 1.0]")
 
     job_id = uuid.uuid4().hex
     in_path = os.path.join(SHARED_DIR, "in", f"{job_id}.mp4")
     out_path = os.path.join(SHARED_DIR, "out", f"{job_id}.mp4")
-    manifest_path = out_path + ".manifest.json"
 
     with open(in_path, "wb") as f:
         f.write(await video.read())
 
-    try:
-        r = requests.post(
-            f"{WORKER_URL}/mask",
-            json={
-                "input_path": in_path,
-                "output_path": out_path,
-                "strategy": strategy,
-                "mode": mode,
-                "prompt_x": prompt_x,
-                "prompt_y": prompt_y,
-                "downsample": downsample,
-                "original_filename": video.filename,
-            },
-            timeout=1800,
-        )
-        r.raise_for_status()
-    except requests.RequestException as e:
-        _safe_unlink(in_path, out_path, manifest_path)
-        raise HTTPException(status_code=502, detail=f"worker error: {e}") from e
+    db.enqueue(
+        job_id=job_id,
+        mode=mode,
+        strategy=strategy,
+        prompt_x=prompt_x,
+        prompt_y=prompt_y,
+        downsample=downsample,
+        original_filename=video.filename,
+        input_path=in_path,
+        output_path=out_path,
+    )
+    return {"job_id": job_id, "status": "pending"}
 
-    try:
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
-            z.write(out_path, arcname="masked.mp4")
-            if os.path.exists(manifest_path):
-                z.write(manifest_path, arcname="manifest.json")
-        buf.seek(0)
-    finally:
-        _safe_unlink(in_path, out_path, manifest_path)
 
-    fname = f"masked_{mode}_{strategy}_{video.filename or 'output'}.zip"
+@app.get("/mask/{job_id}")
+def job_status(job_id: str) -> dict:
+    job = db.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {
+        "job_id": job["id"],
+        "status": job["status"],
+        "mode": job["mode"],
+        "strategy": job["strategy"],
+        "original_filename": job["original_filename"],
+        "created_at": job["created_at"].isoformat() if job["created_at"] else None,
+        "started_at": job["started_at"].isoformat() if job["started_at"] else None,
+        "finished_at": job["finished_at"].isoformat() if job["finished_at"] else None,
+        "error": job["error"],
+    }
+
+
+@app.get("/mask/{job_id}/result")
+def job_result(job_id: str) -> StreamingResponse:
+    job = db.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job["status"] != "done":
+        raise HTTPException(status_code=409, detail=f"job status: {job['status']}")
+
+    out_path = job["output_path"]
+    manifest_path = out_path + ".manifest.json"
+    if not os.path.exists(out_path):
+        raise HTTPException(status_code=500, detail="output missing on disk")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.write(out_path, arcname="masked.mp4")
+        if os.path.exists(manifest_path):
+            z.write(manifest_path, arcname="manifest.json")
+    buf.seek(0)
+
+    base = job["original_filename"] or "output"
+    fname = f"masked_{job['mode']}_{job['strategy']}_{base}.zip"
     return StreamingResponse(
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
-
-
-def _safe_unlink(*paths: str) -> None:
-    for p in paths:
-        try:
-            os.unlink(p)
-        except FileNotFoundError:
-            pass

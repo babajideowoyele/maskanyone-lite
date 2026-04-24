@@ -77,7 +77,7 @@ services:
   worker:
     build:
       context: ./docker/worker
-    command: "uvicorn api:app --host 0.0.0.0 --port 8000"
+    command: "python -u worker.py"
     env_file:
       - ./app.env
     environment:
