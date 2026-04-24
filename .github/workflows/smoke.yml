@@ -1,0 +1,75 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  masker-quick-mode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install masker deps (quick mode only)
+        run: |
+          python -m pip install --upgrade pip
+          # Quick mode needs only MediaPipe + OpenCV + numpy.
+          # Torch/transformers/timm are precision-mode only — skip here to
+          # keep CI under a minute.
+          pip install mediapipe==0.10.14 opencv-python-headless numpy==1.26.4
+
+      - name: Generate synthetic test clip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i testsrc=size=320x240:duration=1:rate=30 \
+            -pix_fmt yuv420p test.mp4
+          ls -l test.mp4
+
+      - name: Run masker (quick mode, blur)
+        env:
+          MASKANYONE_LITE_GIT_SHA: ${{ github.sha }}
+        run: |
+          python worker/masker.py test.mp4 out.mp4 blur quick
+          test -f out.mp4 || (echo "out.mp4 missing" && exit 1)
+          test -f out.mp4.manifest.json || (echo "manifest missing" && exit 1)
+          echo "--- manifest.json ---"
+          cat out.mp4.manifest.json
+
+      - name: Assert manifest schema
+        run: |
+          python - <<'PY'
+          import json, sys
+          m = json.load(open("out.mp4.manifest.json"))
+          assert m["schema_version"] == 1, m
+          assert m["input"]["sha256"], "input sha256 missing"
+          assert m["output"]["mode"] == "quick", m["output"]
+          assert m["output"]["strategy"] == "blur", m["output"]
+          assert m["output"]["frames"] >= 25, f"expected ~30 frames, got {m['output']['frames']}"
+          assert m["output"]["track_ids"] == [1], m["output"]
+          assert m["software"]["git_sha"] != "unknown", "git SHA not injected"
+          assert m["models"]["segmenter"].startswith("mediapipe"), m["models"]
+          print("OK")
+          PY
+
+      - name: Assert output video readable
+        run: |
+          python - <<'PY'
+          import cv2, sys
+          cap = cv2.VideoCapture("out.mp4")
+          assert cap.isOpened(), "output mp4 did not open"
+          frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+          w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+          h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+          assert frames >= 25, f"frames={frames}"
+          assert (w, h) == (320, 240), f"{w}x{h}"
+          cap.release()
+          print("OK")
+          PY
