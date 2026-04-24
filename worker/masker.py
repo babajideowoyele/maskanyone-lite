@@ -114,7 +114,12 @@ def _mask_precision(frame_bgr: np.ndarray, prompt_xy: tuple[int, int]) -> np.nda
 # Person detection via MediaPipe PoseLandmarker (Tasks API). The task file
 # is pre-baked into the worker image at /worker_models/pose_landmarker_heavy.task.
 # For native dev, we fall back to a user-overridable path.
-_pose_detector: Optional[object] = None
+#
+# We do NOT cache the detector globally: detect_for_video() requires strictly
+# monotonically increasing timestamps across the detector's lifetime, and a
+# long-running worker processing multiple jobs would violate that. A fresh
+# detector per mask_video() call costs ~50 ms on startup — negligible vs the
+# per-frame inference budget.
 
 
 def _pose_task_path() -> str:
@@ -133,32 +138,28 @@ def _pose_task_path() -> str:
     )
 
 
-def _get_pose_detector(num_poses: int = 2):
-    global _pose_detector
-    if _pose_detector is None:
-        from mediapipe.tasks import python as mp_tasks
-        from mediapipe.tasks.python import vision
+def _make_pose_detector(num_poses: int = 2):
+    from mediapipe.tasks import python as mp_tasks
+    from mediapipe.tasks.python import vision
 
-        base_opts = mp_tasks.BaseOptions(model_asset_path=_pose_task_path())
-        opts = vision.PoseLandmarkerOptions(
-            base_options=base_opts,
-            running_mode=vision.RunningMode.VIDEO,
-            num_poses=num_poses,
-            min_pose_detection_confidence=0.5,
-            min_pose_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
-        )
-        _pose_detector = vision.PoseLandmarker.create_from_options(opts)
-    return _pose_detector
+    base_opts = mp_tasks.BaseOptions(model_asset_path=_pose_task_path())
+    opts = vision.PoseLandmarkerOptions(
+        base_options=base_opts,
+        running_mode=vision.RunningMode.VIDEO,
+        num_poses=num_poses,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+    return vision.PoseLandmarker.create_from_options(opts)
 
 
 def _detect_person_bboxes(
-    frame_bgr: np.ndarray, timestamp_ms: int, pad_ratio: float = 0.15
+    frame_bgr: np.ndarray, timestamp_ms: int, detector, pad_ratio: float = 0.15
 ) -> list[tuple[int, int, int, int]]:
     """Return list of (x1, y1, x2, y2) pixel bboxes around each detected person."""
     import mediapipe as mp_lib
 
-    detector = _get_pose_detector()
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     mp_image = mp_lib.Image(image_format=mp_lib.ImageFormat.SRGB, data=rgb)
     result = detector.detect_for_video(mp_image, timestamp_ms)
@@ -308,6 +309,7 @@ def _mask_video_detection_driven(
     max_detections = 0
     frames_with_none = 0
     frame_detection_counts: list[int] = []
+    detector = _make_pose_detector()
 
     try:
         while True:
@@ -315,7 +317,7 @@ def _mask_video_detection_driven(
             if not ret:
                 break
             ts_ms = int(n * (1000.0 / fps)) if fps else n
-            boxes = _detect_person_bboxes(frame, ts_ms)
+            boxes = _detect_person_bboxes(frame, ts_ms, detector)
             frame_detection_counts.append(len(boxes))
 
             if not boxes:
@@ -352,6 +354,10 @@ def _mask_video_detection_driven(
     finally:
         cap.release()
         out_writer.release()
+        try:
+            detector.close()
+        except Exception:
+            pass
 
     duration_s = time.perf_counter() - start
     _manifest.write(
