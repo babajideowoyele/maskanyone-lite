@@ -1,0 +1,51 @@
+// Carbon white theme with the IBM Plex stack. Overall tone — monochrome,
+// generous whitespace, content-constrained — aligns with the Synapsis
+// aesthetic we're drawing on.
+@use '@carbon/styles';
+
+body {
+  margin: 0;
+  background: var(--cds-background);
+  color: var(--cds-text-primary);
+  font-family: 'IBM Plex Sans', system-ui, -apple-system, Segoe UI, Roboto,
+    sans-serif;
+}
+
+.cds--header {
+  border-bottom: 1px solid var(--cds-border-subtle);
+}
+
+.content {
+  max-width: 720px;
+  margin: 3rem auto 6rem;
+  padding: 0 1.5rem;
+}
+
+.stack > * + * {
+  margin-top: 1.5rem;
+}
+
+.lede {
+  color: var(--cds-text-secondary);
+  font-size: 1rem;
+  line-height: 1.5;
+  max-width: 52ch;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+.actions {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.muted {
+  color: var(--cds-text-secondary);
+  font-size: 0.875rem;
+}
