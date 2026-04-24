@@ -32,9 +32,14 @@ def platform_mode() -> dict:
 async def mask(
     video: UploadFile = File(...),
     strategy: str = Form("blur"),
+    mode: str = Form("quick"),
+    prompt_x: int | None = Form(None),
+    prompt_y: int | None = Form(None),
 ) -> FileResponse:
     if strategy not in {"blur", "solid", "pixelate"}:
         raise HTTPException(status_code=400, detail=f"unknown strategy: {strategy}")
+    if mode not in {"quick", "precision"}:
+        raise HTTPException(status_code=400, detail=f"unknown mode: {mode}")
 
     job_id = uuid.uuid4().hex
     in_path = os.path.join(SHARED_DIR, "in", f"{job_id}.mp4")
@@ -46,8 +51,15 @@ async def mask(
     try:
         r = requests.post(
             f"{WORKER_URL}/mask",
-            json={"input_path": in_path, "output_path": out_path, "strategy": strategy},
-            timeout=600,
+            json={
+                "input_path": in_path,
+                "output_path": out_path,
+                "strategy": strategy,
+                "mode": mode,
+                "prompt_x": prompt_x,
+                "prompt_y": prompt_y,
+            },
+            timeout=1800,
         )
         r.raise_for_status()
     except requests.RequestException as e:

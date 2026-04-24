@@ -1,63 +1,120 @@
-"""MediaPipe Selfie-segmentation masker.
+"""Video masker — quick (MediaPipe Selfie) and precision (EdgeTAM) modes.
 
-Quick mode of maskanyone-lite: blur the person silhouette, keep the
-background. No prompts, no tracking — just per-frame binary segmentation.
-
-Usage:
-    python masker.py <input.mp4> <output.mp4> [strategy]
-    strategy: blur (default) | solid | pixelate
+Both modes produce a per-frame binary mask of the subject; `strategy`
+(blur | solid | pixelate) controls how the mask region is rewritten.
 """
 from __future__ import annotations
 
+import os
 import sys
+from typing import Optional
 
 import cv2
 import mediapipe as mp
 import numpy as np
 
 
-def mask_video(input_path: str, output_path: str, strategy: str = "blur") -> int:
+def _replace(frame: np.ndarray, mask3: np.ndarray, strategy: str, w: int, h: int) -> np.ndarray:
+    if strategy == "blur":
+        replacement = cv2.GaussianBlur(frame, (0, 0), sigmaX=25)
+    elif strategy == "solid":
+        replacement = np.zeros_like(frame)
+    elif strategy == "pixelate":
+        small = cv2.resize(frame, (max(1, w // 20), max(1, h // 20)), interpolation=cv2.INTER_LINEAR)
+        replacement = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+    else:
+        raise ValueError(f"unknown strategy: {strategy}")
+    return np.where(mask3, replacement, frame)
+
+
+def _mask_quick(frame_bgr: np.ndarray, segmenter) -> np.ndarray:
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    return segmenter.process(rgb).segmentation_mask > 0.5
+
+
+# EdgeTAM is loaded lazily (heavy import + model download) and cached.
+_edgetam: Optional[tuple] = None
+
+
+def _get_edgetam():
+    global _edgetam
+    if _edgetam is None:
+        import torch
+        from PIL import Image
+        from transformers import EdgeTamModel, Sam2Processor
+
+        torch.set_num_threads(max(1, (os.cpu_count() or 4) - 1))
+        torch.set_grad_enabled(False)
+        processor = Sam2Processor.from_pretrained("yonigozlan/EdgeTAM-hf")
+        model = EdgeTamModel.from_pretrained("yonigozlan/EdgeTAM-hf").to("cpu").eval()
+        _edgetam = (model, processor, torch, Image)
+    return _edgetam
+
+
+def _mask_precision(frame_bgr: np.ndarray, prompt_xy: tuple[int, int]) -> np.ndarray:
+    model, processor, torch, Image = _get_edgetam()
+    pil = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+    inputs = processor(
+        images=pil,
+        input_points=[[[[prompt_xy[0], prompt_xy[1]]]]],
+        input_labels=[[[1]]],
+        return_tensors="pt",
+    )
+    outputs = model(**inputs)
+    masks = processor.post_process_masks(outputs.pred_masks.cpu(), inputs["original_sizes"])[0]
+    mask = masks[0, 0] if masks.ndim == 4 else masks[0]
+    return mask.numpy().astype(bool)
+
+
+def mask_video(
+    input_path: str,
+    output_path: str,
+    strategy: str = "blur",
+    mode: str = "quick",
+    prompt_xy: Optional[tuple[int, int]] = None,
+) -> int:
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         raise RuntimeError(f"cannot open {input_path}")
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
 
-    selfie = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
+    if mode == "quick":
+        segmenter = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
+        mask_fn = lambda f: _mask_quick(f, segmenter)
+        cleanup = lambda: segmenter.close()
+    elif mode == "precision":
+        pxy = prompt_xy or (w // 2, h // 2)
+        mask_fn = lambda f: _mask_precision(f, pxy)
+        cleanup = lambda: None
+    else:
+        cap.release(); out.release()
+        raise ValueError(f"unknown mode: {mode}")
+
     n = 0
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mask = selfie.process(rgb).segmentation_mask > 0.5
+            mask = mask_fn(frame)
             mask3 = np.repeat(mask[..., None], 3, axis=2)
-            if strategy == "blur":
-                replacement = cv2.GaussianBlur(frame, (0, 0), sigmaX=25)
-            elif strategy == "solid":
-                replacement = np.zeros_like(frame)
-            elif strategy == "pixelate":
-                small = cv2.resize(frame, (max(1, w // 20), max(1, h // 20)), interpolation=cv2.INTER_LINEAR)
-                replacement = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
-            else:
-                raise ValueError(f"unknown strategy: {strategy}")
-            out.write(np.where(mask3, replacement, frame))
+            out.write(_replace(frame, mask3, strategy, w, h))
             n += 1
     finally:
         cap.release()
         out.release()
-        selfie.close()
+        cleanup()
     return n
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("usage: python masker.py <input.mp4> <output.mp4> [blur|solid|pixelate]", file=sys.stderr)
+        print("usage: python masker.py <in.mp4> <out.mp4> [strategy] [mode]", file=sys.stderr)
         sys.exit(2)
-    strat = sys.argv[3] if len(sys.argv) > 3 else "blur"
-    n = mask_video(sys.argv[1], sys.argv[2], strat)
-    print(f"wrote {sys.argv[2]}: {n} frames, strategy={strat}")
+    strategy = sys.argv[3] if len(sys.argv) > 3 else "blur"
+    mode = sys.argv[4] if len(sys.argv) > 4 else "quick"
+    n = mask_video(sys.argv[1], sys.argv[2], strategy, mode)
+    print(f"wrote {sys.argv[2]}: {n} frames, strategy={strategy}, mode={mode}")
