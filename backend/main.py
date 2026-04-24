@@ -7,12 +7,14 @@ A proper job queue will replace this — same /mask contract, different internal
 """
 from __future__ import annotations
 
+import io
 import os
 import uuid
+import zipfile
 
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 
 app = FastAPI()
 
@@ -67,9 +69,17 @@ async def mask(
         raise HTTPException(status_code=502, detail=f"worker error: {e}") from e
 
     os.unlink(in_path)
-    return FileResponse(
-        out_path,
-        media_type="video/mp4",
-        filename=f"masked_{strategy}_{video.filename or 'output.mp4'}",
-        background=None,
+
+    manifest_path = out_path + ".manifest.json"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.write(out_path, arcname="masked.mp4")
+        if os.path.exists(manifest_path):
+            z.write(manifest_path, arcname="manifest.json")
+    buf.seek(0)
+    fname = f"masked_{mode}_{strategy}_{video.filename or 'output'}.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )

@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Optional
 
 import cv2
 import mediapipe as mp
 import numpy as np
+
+import manifest as _manifest
 
 
 def _replace(frame: np.ndarray, mask3: np.ndarray, strategy: str, w: int, h: int) -> np.ndarray:
@@ -93,6 +96,7 @@ def mask_video(
         cap.release(); out.release()
         raise ValueError(f"unknown mode: {mode}")
 
+    start = time.perf_counter()
     n = 0
     try:
         while True:
@@ -107,6 +111,17 @@ def mask_video(
         cap.release()
         out.release()
         cleanup()
+    duration_s = time.perf_counter() - start
+    _manifest.write(
+        output_path + ".manifest.json",
+        input_path=input_path,
+        output_path=output_path,
+        mode=mode,
+        strategy=strategy,
+        prompt_xy=prompt_xy if mode == "precision" else None,
+        frames=n,
+        duration_s=duration_s,
+    )
     return n
 
 

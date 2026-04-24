@@ -82,6 +82,7 @@ services:
       - ./app.env
     environment:
       - MALLOC_ARENA_MAX=2
+      - MASKANYONE_LITE_GIT_SHA=${MASKANYONE_LITE_GIT_SHA:-unknown}
     volumes:
       - ./worker:/app
       - ./data/shared:/var/lib/maskanyone/shared
