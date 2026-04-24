@@ -37,16 +37,21 @@ inference by roughly 10x** in our measurements (EdgeTAM precision mode:
 ~2 min native vs ~24 min in Docker Desktop on the same 16-thread CPU).
 Linux hosts and native WSL2-Docker are unaffected.
 
-If you're on Windows and need real throughput, you have two options:
+Recommended order by performance + ease:
 
-1. **Use Docker inside WSL2 directly** (`wsl --install`, install Docker
-   Engine inside Ubuntu, skip Docker Desktop). Recovers most of the
-   performance.
-2. **Bypass Docker for development** using `scripts/native_dev.sh` —
-   creates a venv, installs masker deps, lets you run
-   `python worker/masker.py <input> <output> blur precision` directly.
-   Fastest iteration on Windows, but **not the distributed UX** — don't
-   rely on this for reproducibility or deployment.
+1. **Linux + Docker Engine** — simplest and fastest. `apt install docker.io`
+   + `docker compose up -d`. No VM overhead; matches what you'd run on a
+   research cluster.
+2. **Windows + WSL2-native Docker** — `wsl --install`, install Docker
+   Engine inside Ubuntu, skip Docker Desktop. Recovers most of the
+   performance lost to Docker Desktop's VM.
+3. **Windows + Docker Desktop** — works out of the box; precision mode
+   is slow but quick mode is fine. Good enough for a single-clip user.
+4. **Native Python via `scripts/native_dev.sh`** — fastest iteration on
+   Windows, **dev-only**. Not the distributed UX — don't rely on this
+   for reproducibility.
+5. **macOS + Docker Desktop** — similar VM-overhead caveats to Windows
+   Docker Desktop. For Apple Silicon, perf may vary further.
 
 ## License
 
