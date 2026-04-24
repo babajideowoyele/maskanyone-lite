@@ -59,6 +59,8 @@ def write(
     frames: int,
     duration_s: float,
     original_filename: Optional[str] = None,
+    detection_max_per_frame: Optional[int] = None,
+    frames_with_no_detection: Optional[int] = None,
 ) -> dict:
     import numpy
     manifest = {
@@ -76,7 +78,13 @@ def write(
             "strategy": strategy,
             "prompt_xy": list(prompt_xy) if prompt_xy else None,
             "downsample": downsample,
-            "track_ids": [1],
+            "track_ids": (
+                list(range(1, detection_max_per_frame + 1))
+                if detection_max_per_frame is not None and detection_max_per_frame > 0
+                else [1]
+            ),
+            "detection_max_per_frame": detection_max_per_frame,
+            "frames_with_no_detection": frames_with_no_detection,
         },
         "runtime": {
             "duration_seconds": round(duration_s, 2),

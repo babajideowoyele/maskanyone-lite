@@ -111,6 +111,74 @@ def _mask_precision(frame_bgr: np.ndarray, prompt_xy: tuple[int, int]) -> np.nda
     return mask.numpy().astype(bool)
 
 
+# Person detection via MediaPipe PoseLandmarker (Tasks API). The task file
+# is pre-baked into the worker image at /worker_models/pose_landmarker_heavy.task.
+# For native dev, we fall back to a user-overridable path.
+_pose_detector: Optional[object] = None
+
+
+def _pose_task_path() -> str:
+    candidates = [
+        os.environ.get("POSE_LANDMARKER_TASK", ""),
+        "/worker_models/pose_landmarker_heavy.task",
+        os.path.expanduser("~/.cache/maskanyone-lite/pose_landmarker_heavy.task"),
+    ]
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    raise FileNotFoundError(
+        "pose_landmarker_heavy.task not found. Set POSE_LANDMARKER_TASK env var "
+        "or download from https://storage.googleapis.com/mediapipe-models/"
+        "pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task"
+    )
+
+
+def _get_pose_detector(num_poses: int = 2):
+    global _pose_detector
+    if _pose_detector is None:
+        from mediapipe.tasks import python as mp_tasks
+        from mediapipe.tasks.python import vision
+
+        base_opts = mp_tasks.BaseOptions(model_asset_path=_pose_task_path())
+        opts = vision.PoseLandmarkerOptions(
+            base_options=base_opts,
+            running_mode=vision.RunningMode.VIDEO,
+            num_poses=num_poses,
+            min_pose_detection_confidence=0.5,
+            min_pose_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        _pose_detector = vision.PoseLandmarker.create_from_options(opts)
+    return _pose_detector
+
+
+def _detect_person_bboxes(
+    frame_bgr: np.ndarray, timestamp_ms: int, pad_ratio: float = 0.15
+) -> list[tuple[int, int, int, int]]:
+    """Return list of (x1, y1, x2, y2) pixel bboxes around each detected person."""
+    import mediapipe as mp_lib
+
+    detector = _get_pose_detector()
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    mp_image = mp_lib.Image(image_format=mp_lib.ImageFormat.SRGB, data=rgb)
+    result = detector.detect_for_video(mp_image, timestamp_ms)
+
+    h, w = frame_bgr.shape[:2]
+    boxes: list[tuple[int, int, int, int]] = []
+    for pose in result.pose_landmarks:
+        xs = [lm.x for lm in pose]
+        ys = [lm.y for lm in pose]
+        x1, y1 = min(xs), min(ys)
+        x2, y2 = max(xs), max(ys)
+        bw, bh = x2 - x1, y2 - y1
+        x1 = max(0.0, x1 - bw * pad_ratio)
+        y1 = max(0.0, y1 - bh * pad_ratio)
+        x2 = min(1.0, x2 + bw * pad_ratio)
+        y2 = min(1.0, y2 + bh * pad_ratio)
+        boxes.append((int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)))
+    return boxes
+
+
 def mask_video(
     input_path: str,
     output_path: str,
@@ -169,13 +237,22 @@ def mask_video(
         )
         return n
 
+    # Precision mode with no explicit prompt → detect persons, crop, segment
+    # per crop, composite. This is the path that makes heavier segmenters
+    # (EdgeTAM today, Sapiens later) tractable on CPU and fixes the silent
+    # multi-person failure.
+    if mode == "precision" and prompt_xy is None:
+        return _mask_video_detection_driven(
+            cap, out, w, h, fps, strategy, downsample,
+            input_path, output_path, original_filename,
+        )
+
     if mode == "quick":
         segmenter = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
         mask_fn = lambda f: _mask_quick(f, segmenter)
         cleanup = lambda: segmenter.close()
     elif mode == "precision":
-        # Scale prompt to the downsampled frame if we're resizing.
-        raw = prompt_xy or (w // 2, h // 2)
+        raw = prompt_xy  # guaranteed not None by the branch above
         pxy_small = (int(raw[0] * downsample), int(raw[1] * downsample))
         mask_fn = lambda f: _mask_precision(f, pxy_small)
         cleanup = lambda: None
@@ -215,6 +292,86 @@ def mask_video(
         frames=n,
         duration_s=duration_s,
         original_filename=original_filename,
+    )
+    return n
+
+
+def _mask_video_detection_driven(
+    cap, out_writer, w: int, h: int, fps: float,
+    strategy: str, downsample: float,
+    input_path: str, output_path: str, original_filename: Optional[str],
+) -> int:
+    """Precision mode, no manual prompt:
+    per frame → detect people → crop each → EdgeTAM on crop → composite."""
+    start = time.perf_counter()
+    n = 0
+    max_detections = 0
+    frames_with_none = 0
+    frame_detection_counts: list[int] = []
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            ts_ms = int(n * (1000.0 / fps)) if fps else n
+            boxes = _detect_person_bboxes(frame, ts_ms)
+            frame_detection_counts.append(len(boxes))
+
+            if not boxes:
+                frames_with_none += 1
+                # No person detected — pass the frame through unmasked. Honest
+                # default: don't silently produce a garbage mask on a bad frame.
+                out_writer.write(frame)
+                n += 1
+                continue
+
+            max_detections = max(max_detections, len(boxes))
+            mask_full = np.zeros((h, w), dtype=bool)
+            for (x1, y1, x2, y2) in boxes:
+                if x2 - x1 < 4 or y2 - y1 < 4:
+                    continue  # degenerate bbox
+                crop = frame[y1:y2, x1:x2]
+                if downsample < 1.0:
+                    cw, ch = crop.shape[1], crop.shape[0]
+                    sw_c = max(1, int(cw * downsample))
+                    sh_c = max(1, int(ch * downsample))
+                    crop_small = cv2.resize(crop, (sw_c, sh_c), interpolation=cv2.INTER_AREA)
+                    mask_crop_small = _mask_precision(crop_small, (sw_c // 2, sh_c // 2))
+                    mask_crop = cv2.resize(
+                        mask_crop_small.astype(np.uint8), (cw, ch),
+                        interpolation=cv2.INTER_NEAREST,
+                    ).astype(bool)
+                else:
+                    mask_crop = _mask_precision(crop, ((x2 - x1) // 2, (y2 - y1) // 2))
+                mask_full[y1:y2, x1:x2] |= mask_crop
+
+            mask3 = np.repeat(mask_full[..., None], 3, axis=2)
+            out_writer.write(_replace(frame, mask3, strategy, w, h))
+            n += 1
+    finally:
+        cap.release()
+        out_writer.release()
+
+    duration_s = time.perf_counter() - start
+    _manifest.write(
+        output_path + ".manifest.json",
+        input_path=input_path,
+        output_path=output_path,
+        mode="precision",
+        strategy=strategy,
+        prompt_xy=None,
+        downsample=downsample,
+        frames=n,
+        duration_s=duration_s,
+        original_filename=original_filename,
+        detection_max_per_frame=max_detections,
+        frames_with_no_detection=frames_with_none,
+    )
+    print(
+        f"[masker] precision+detect: {n} frames, "
+        f"max_persons={max_detections}, empty_frames={frames_with_none}, "
+        f"{duration_s:.1f}s"
     )
     return n
 
