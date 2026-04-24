@@ -37,15 +37,19 @@ async def mask(
     mode: str = Form("quick"),
     prompt_x: int | None = Form(None),
     prompt_y: int | None = Form(None),
-) -> FileResponse:
+    downsample: float = Form(1.0),
+) -> StreamingResponse:
     if strategy not in {"blur", "solid", "pixelate"}:
         raise HTTPException(status_code=400, detail=f"unknown strategy: {strategy}")
     if mode not in {"quick", "precision"}:
         raise HTTPException(status_code=400, detail=f"unknown mode: {mode}")
+    if not 0.1 <= downsample <= 1.0:
+        raise HTTPException(status_code=400, detail=f"downsample must be in [0.1, 1.0]")
 
     job_id = uuid.uuid4().hex
     in_path = os.path.join(SHARED_DIR, "in", f"{job_id}.mp4")
     out_path = os.path.join(SHARED_DIR, "out", f"{job_id}.mp4")
+    manifest_path = out_path + ".manifest.json"
 
     with open(in_path, "wb") as f:
         f.write(await video.read())
@@ -60,26 +64,37 @@ async def mask(
                 "mode": mode,
                 "prompt_x": prompt_x,
                 "prompt_y": prompt_y,
+                "downsample": downsample,
+                "original_filename": video.filename,
             },
             timeout=1800,
         )
         r.raise_for_status()
     except requests.RequestException as e:
-        os.unlink(in_path)
+        _safe_unlink(in_path, out_path, manifest_path)
         raise HTTPException(status_code=502, detail=f"worker error: {e}") from e
 
-    os.unlink(in_path)
+    try:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+            z.write(out_path, arcname="masked.mp4")
+            if os.path.exists(manifest_path):
+                z.write(manifest_path, arcname="manifest.json")
+        buf.seek(0)
+    finally:
+        _safe_unlink(in_path, out_path, manifest_path)
 
-    manifest_path = out_path + ".manifest.json"
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
-        z.write(out_path, arcname="masked.mp4")
-        if os.path.exists(manifest_path):
-            z.write(manifest_path, arcname="manifest.json")
-    buf.seek(0)
     fname = f"masked_{mode}_{strategy}_{video.filename or 'output'}.zip"
     return StreamingResponse(
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+def _safe_unlink(*paths: str) -> None:
+    for p in paths:
+        try:
+            os.unlink(p)
+        except FileNotFoundError:
+            pass

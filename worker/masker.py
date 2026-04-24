@@ -75,13 +75,20 @@ def mask_video(
     strategy: str = "blur",
     mode: str = "quick",
     prompt_xy: Optional[tuple[int, int]] = None,
+    downsample: float = 1.0,
+    original_filename: Optional[str] = None,
 ) -> int:
+    if not 0.1 <= downsample <= 1.0:
+        raise ValueError(f"downsample must be in [0.1, 1.0], got {downsample}")
+
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         raise RuntimeError(f"cannot open {input_path}")
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    # Segmentation resolution; output stays at native resolution.
+    sw, sh = max(1, int(w * downsample)), max(1, int(h * downsample))
     out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
 
     if mode == "quick":
@@ -89,8 +96,10 @@ def mask_video(
         mask_fn = lambda f: _mask_quick(f, segmenter)
         cleanup = lambda: segmenter.close()
     elif mode == "precision":
-        pxy = prompt_xy or (w // 2, h // 2)
-        mask_fn = lambda f: _mask_precision(f, pxy)
+        # Scale prompt to the downsampled frame if we're resizing.
+        raw = prompt_xy or (w // 2, h // 2)
+        pxy_small = (int(raw[0] * downsample), int(raw[1] * downsample))
+        mask_fn = lambda f: _mask_precision(f, pxy_small)
         cleanup = lambda: None
     else:
         cap.release(); out.release()
@@ -103,7 +112,12 @@ def mask_video(
             ret, frame = cap.read()
             if not ret:
                 break
-            mask = mask_fn(frame)
+            if downsample < 1.0:
+                frame_small = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_AREA)
+                mask_small = mask_fn(frame_small)
+                mask = cv2.resize(mask_small.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+            else:
+                mask = mask_fn(frame)
             mask3 = np.repeat(mask[..., None], 3, axis=2)
             out.write(_replace(frame, mask3, strategy, w, h))
             n += 1
@@ -119,8 +133,10 @@ def mask_video(
         mode=mode,
         strategy=strategy,
         prompt_xy=prompt_xy if mode == "precision" else None,
+        downsample=downsample,
         frames=n,
         duration_s=duration_s,
+        original_filename=original_filename,
     )
     return n
 

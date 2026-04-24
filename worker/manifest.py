@@ -55,14 +55,17 @@ def write(
     mode: str,
     strategy: str,
     prompt_xy: Optional[tuple[int, int]],
+    downsample: float,
     frames: int,
     duration_s: float,
+    original_filename: Optional[str] = None,
 ) -> dict:
     import numpy
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "input": {
+            "original_filename": original_filename,
             "basename": os.path.basename(input_path),
             "sha256": _sha256(input_path),
         },
@@ -72,6 +75,8 @@ def write(
             "mode": mode,
             "strategy": strategy,
             "prompt_xy": list(prompt_xy) if prompt_xy else None,
+            "downsample": downsample,
+            "track_ids": [1],
         },
         "runtime": {
             "duration_seconds": round(duration_s, 2),

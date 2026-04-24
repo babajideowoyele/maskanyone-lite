@@ -22,6 +22,8 @@ class MaskRequest(BaseModel):
     mode: str = "quick"
     prompt_x: int | None = None
     prompt_y: int | None = None
+    downsample: float = 1.0
+    original_filename: str | None = None
 
 
 @app.get("/health")
@@ -34,5 +36,8 @@ def mask(req: MaskRequest) -> dict:
     if not os.path.exists(req.input_path):
         raise HTTPException(status_code=404, detail=f"input not found: {req.input_path}")
     prompt = (req.prompt_x, req.prompt_y) if req.prompt_x is not None and req.prompt_y is not None else None
-    n = mask_video(req.input_path, req.output_path, req.strategy, req.mode, prompt)
+    n = mask_video(
+        req.input_path, req.output_path, req.strategy, req.mode, prompt,
+        downsample=req.downsample, original_filename=req.original_filename,
+    )
     return {"frames": n, "output_path": req.output_path, "strategy": req.strategy, "mode": req.mode}
